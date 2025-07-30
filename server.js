@@ -1,232 +1,167 @@
 const express = require('express');
-const { Client, MessageMedia, Buttons, List } = require('whatsapp-web.js');
+const { Client } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const axios = require('axios');
 
 const app = express();
 const port = 3000;
 
+// 🔗 Webhook vers lequel on envoie les messages reçus
+const WEBHOOK_URL = 'https://ton-serveur.com/whatsapp-webhook'; // remplace par ton URL
+
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Pour les médias en base64
+app.use(express.json());
 
+let qrCodeBase64 = null;
+let authenticated = false;
+let client;
+
+// 🌍 Ton serveur Python distant pour stocker la session
 const REMOTE_SESSION_URL = 'https://sendfiles.pythonanywhere.com/api';
-const clients = {}; // number => { client, qr, session, webhook }
 
-async function fetchSession(number) {
+// 📥 Récupérer session distante
+async function fetchSessionFromRemote() {
   try {
-    const res = await fetch(`${REMOTE_SESSION_URL}/getSession?number=${number}`);
-    if (!res.ok) throw new Error();
-    return await res.json();
-  } catch {
+    const res = await fetch(`${REMOTE_SESSION_URL}/getSession`);
+    if (!res.ok) throw new Error('Session non trouvée');
+    const session = await res.json();
+    return session;
+  } catch (error) {
+    console.warn('⚠️ Aucune session trouvée sur le serveur distant');
     return null;
   }
 }
 
-async function saveSession(number, session) {
+// 📤 Fonction pour envoyer un événement webhook
+async function emitWebhookEvent(eventType, data) {
+  if (!WEBHOOK_URL) return;
   try {
-    await fetch(`${REMOTE_SESSION_URL}/saveSession?number=${number}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(session),
+    await axios.post(WEBHOOK_URL, {
+      event: eventType,
+      data
     });
+    console.log('📤 Webhook envoyé avec succès');
   } catch (err) {
-    console.error('❌ Erreur sauvegarde session :', err.message);
+    console.error('❌ Erreur lors de l’envoi du webhook :', err.message);
   }
 }
 
-async function createClient(number, webhook = null) {
-  if (clients[number]) return clients[number];
+// 🚀 Démarrer le client WhatsApp
+async function initClient() {
+  const session = await fetchSessionFromRemote();
 
-  const session = await fetchSession(number);
-  const client = new Client({
+  client = new Client({
     session,
     puppeteer: { headless: true, args: ['--no-sandbox'] },
   });
 
-  clients[number] = { client, qr: null, session, webhook };
-
   client.on('qr', async (qr) => {
-    clients[number].qr = await QRCode.toDataURL(qr);
+    console.log('📲 QR généré');
+    qrCodeBase64 = await QRCode.toDataURL(qr);
+    authenticated = false;
   });
 
   client.on('authenticated', async (session) => {
-    clients[number].qr = null;
-    clients[number].session = session;
-    await saveSession(number, session);
-  });
+    console.log('✅ Authentifié');
+    authenticated = true;
+    qrCodeBase64 = null;
 
-  client.on('ready', () => {
-    console.log(`✅ Client ${number} prêt`);
+    try {
+      await fetch(`${REMOTE_SESSION_URL}/saveSession`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(session),
+      });
+      console.log('☁️ Session sauvegardée sur le serveur distant');
+    } catch (err) {
+      console.error('❌ Erreur lors de la sauvegarde distante', err.message);
+    }
   });
 
   client.on('auth_failure', (msg) => {
-    console.error(`❌ Auth échouée ${number}:`, msg);
+    console.error('❌ Authentification échouée :', msg);
+    authenticated = false;
   });
 
-  client.on('disconnected', () => {
-    console.warn(`⚠️ ${number} déconnecté`);
-    delete clients[number];
+  client.on('ready', () => {
+    console.log('🤖 Client prêt');
+    authenticated = true;
+    qrCodeBase64 = null;
   });
 
+  // 📩 Quand un message est reçu
   client.on('message', async (msg) => {
-    const webhook = clients[number]?.webhook;
-    if (webhook) {
-      try {
-        await fetch(webhook, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            number,
-            from: msg.from,
-            body: msg.body,
-            type: msg.type,
-            timestamp: msg.timestamp,
-            id: msg.id.id,
-          }),
-        });
-      } catch (err) {
-        console.error(`❌ Webhook ${number}:`, err.message);
-      }
+    console.log('📩 Message reçu :', msg.body);
+
+    const contact = await msg.getContact();
+    const chat = await msg.getChat();
+
+    // Payload à envoyer vers ton webhook distant
+    const payload = {
+      from: msg.from,
+      body: msg.body,
+      type: msg.type,
+      timestamp: msg.timestamp,
+      fromMe: msg.fromMe,
+      author: msg.author || null,
+      chatId: chat.id._serialized,
+      isGroup: chat.isGroup,
+      contactName: contact.name || contact.pushname || null
+    };
+
+    // Envoi du message vers le webhook
+    emitWebhookEvent('message_received', payload);
+
+    // Répondre automatiquement si l'utilisateur écrit ".ping"
+    if (msg.body.toLowerCase() === '.ping') {
+      msg.reply('Reçu avec succès ✅');
     }
   });
 
   client.initialize();
-  return clients[number];
 }
 
-// === ROUTES ===
+initClient();
 
-// Lancer un client
-app.post('/startClient', async (req, res) => {
-  const { number, webhook } = req.body;
-  if (!number) return res.status(400).json({ error: 'Numéro requis' });
+// === ROUTES API ===
 
-  try {
-    await createClient(number, webhook);
-    res.json({ status: 'started' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+app.get('/auth', (req, res) => {
+  if (authenticated) {
+    return res.json({ status: 'authenticated' });
+  } else if (qrCodeBase64) {
+    return res.json({ status: 'scan me', qr: qrCodeBase64 });
+  } else {
+    return res.json({ status: 'waiting for qr...' });
   }
 });
 
-// QR code
-app.get('/qr/:number', async (req, res) => {
-  const number = req.params.number;
-  const clientData = clients[number];
-  if (!clientData) return res.status(404).json({ error: 'Client non trouvé' });
-
-  res.json(clientData.qr ? { status: 'scan', qr: clientData.qr } : { status: 'authenticated' });
+app.get('/checkAuth', (req, res) => {
+  res.json({ status: authenticated ? 'authenticated' : 'not authenticated' });
 });
 
-// Statut
-app.get('/status/:number', (req, res) => {
-  const client = clients[req.params.number];
-  if (!client) return res.json({ status: 'not_initialized' });
-  res.json({ status: client.qr ? 'pending' : 'authenticated' });
-});
-
-// Envoyer message texte
 app.post('/sendMessage', async (req, res) => {
-  const { number, to, message } = req.body;
-  const clientData = clients[number];
-  if (!clientData) return res.status(404).json({ error: 'Client non trouvé' });
+  const { number, message } = req.body;
+
+  if (!authenticated) {
+    return res.status(401).json({ error: 'Client non authentifié' });
+  }
+
+  if (!number || !message) {
+    return res.status(400).json({ error: 'Numéro et message requis' });
+  }
+
+  const formatted = number.replace('+', '') + '@c.us';
 
   try {
-    await clientData.client.sendMessage(to + '@c.us', message);
+    await client.sendMessage(formatted, message);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Envoyer média (base64)
-app.post('/sendMedia', async (req, res) => {
-  const { number, to, mimetype, filename, mediaBase64, caption } = req.body;
-  const clientData = clients[number];
-  if (!clientData) return res.status(404).json({ error: 'Client non trouvé' });
-
-  try {
-    const media = new MessageMedia(mimetype, mediaBase64, filename);
-    await clientData.client.sendMessage(to + '@c.us', media, { caption: caption || '' });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Répondre à un message
-app.post('/replyMessage', async (req, res) => {
-  const { number, to, message, quotedId } = req.body;
-  const clientData = clients[number];
-  if (!clientData) return res.status(404).json({ error: 'Client non trouvé' });
-
-  try {
-    await clientData.client.sendMessage(to + '@c.us', message, { quotedMessageId: quotedId });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Envoyer boutons
-app.post('/sendButtons', async (req, res) => {
-  const { number, to, text, title, buttons } = req.body;
-  const clientData = clients[number];
-  if (!clientData) return res.status(404).json({ error: 'Client non trouvé' });
-
-  try {
-    const buttonObj = new Buttons(text, buttons, title, '');
-    await clientData.client.sendMessage(to + '@c.us', buttonObj);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Envoyer liste
-app.post('/sendList', async (req, res) => {
-  const { number, to, title, body, buttonText, sections } = req.body;
-  const clientData = clients[number];
-  if (!clientData) return res.status(404).json({ error: 'Client non trouvé' });
-
-  try {
-    const list = new List(body, sections, title, buttonText, '');
-    await clientData.client.sendMessage(to + '@c.us', list);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Typing, vu, présence
-app.post('/presence', async (req, res) => {
-  const { number, to, action } = req.body;
-  const clientData = clients[number];
-  if (!clientData) return res.status(404).json({ error: 'Client non trouvé' });
-
-  const chatId = to + '@c.us';
-  try {
-    switch (action) {
-      case 'typing':
-        await clientData.client.sendTyping(chatId);
-        break;
-      case 'seen':
-        await clientData.client.sendSeen(chatId);
-        break;
-      case 'available':
-        await clientData.client.sendPresenceAvailable();
-        break;
-      default:
-        return res.status(400).json({ error: 'Action inconnue' });
-    }
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Lancer le serveur
 app.listen(port, () => {
-  console.log(`🚀 Serveur WhatsApp complet lancé sur http://localhost:${port}`);
+  console.log(`🚀 Serveur WhatsApp en ligne sur http://localhost:${port}`);
 });
