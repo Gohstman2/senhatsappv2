@@ -1,0 +1,18 @@
+{
+  "name": "whatsapp-multi-client-api",
+  "version": "1.0.0",
+  "description": "API Node.js multi-clients pour WhatsApp avec support des messages, médias, boutons, listes, webhooks",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "TonNomOuTonProjet",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "node-fetch": "^2.6.12",
+    "qrcode": "^1.5.1",
+    "whatsapp-web.js": "^1.23.0"
+  }
+}
