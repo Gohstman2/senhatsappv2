@@ -17,7 +17,7 @@ let client;
 // 🌍 Ton serveur Python distant
 const REMOTE_SESSION_URL = 'https://sendfiles.pythonanywhere.com/api';
 // 🔗 URL de ton webhook
-const WEBHOOK_URL = 'https://webhookwhastsappv2.onrender.com/whatsapp';
+const WEBHOOK_URL = 'https://webhookwhastsappv2-1.onrender.com/whatsapp';
 
 // 📥 Récupérer session distante
 async function fetchSessionFromRemote() {
