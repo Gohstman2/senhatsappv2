@@ -3,13 +3,9 @@ const { Client } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const cors = require('cors');
 const fetch = require('node-fetch');
-const axios = require('axios');
 
 const app = express();
 const port = 3000;
-
-// 🔗 Webhook vers lequel on envoie les messages reçus
-const WEBHOOK_URL = 'https://ton-serveur.com/whatsapp-webhook'; // remplace par ton URL
 
 app.use(cors());
 app.use(express.json());
@@ -18,8 +14,10 @@ let qrCodeBase64 = null;
 let authenticated = false;
 let client;
 
-// 🌍 Ton serveur Python distant pour stocker la session
+// 🌍 Ton serveur Python distant
 const REMOTE_SESSION_URL = 'https://sendfiles.pythonanywhere.com/api';
+// 🔗 URL de ton webhook
+const WEBHOOK_URL = 'https://webhookwhastsappv2.onrender.com/whatsapp';
 
 // 📥 Récupérer session distante
 async function fetchSessionFromRemote() {
@@ -31,20 +29,6 @@ async function fetchSessionFromRemote() {
   } catch (error) {
     console.warn('⚠️ Aucune session trouvée sur le serveur distant');
     return null;
-  }
-}
-
-// 📤 Fonction pour envoyer un événement webhook
-async function emitWebhookEvent(eventType, data) {
-  if (!WEBHOOK_URL) return;
-  try {
-    await axios.post(WEBHOOK_URL, {
-      event: eventType,
-      data
-    });
-    console.log('📤 Webhook envoyé avec succès');
-  } catch (err) {
-    console.error('❌ Erreur lors de l’envoi du webhook :', err.message);
   }
 }
 
@@ -90,42 +74,37 @@ async function initClient() {
     authenticated = true;
     qrCodeBase64 = null;
   });
+ client.on('message', async (msg) => {
+  console.log(`📩 Nouveau message de ${msg.from}: ${msg.body}`);
 
-  // 📩 Quand un message est reçu
-  client.on('message', async (msg) => {
-    console.log('📩 Message reçu :', msg.body);
+  // Préparer les données à envoyer
+  const payload = {
+    from: msg.from,        // ID WhatsApp (ex: "33712345678@c.us")
+    body: msg.body,        // Contenu du message
+    timestamp: msg.timestamp,
+    type: msg.type,        // Type (chat, image, audio, etc.)
+    isGroupMsg: msg.from.includes('@g.us'), // Vérifie si c'est un groupe
+  };
 
-    const contact = await msg.getContact();
-    const chat = await msg.getChat();
-
-    // Payload à envoyer vers ton webhook distant
-    const payload = {
-      from: msg.from,
-      body: msg.body,
-      type: msg.type,
-      timestamp: msg.timestamp,
-      fromMe: msg.fromMe,
-      author: msg.author || null,
-      chatId: chat.id._serialized,
-      isGroup: chat.isGroup,
-      contactName: contact.name || contact.pushname || null
-    };
-
-    // Envoi du message vers le webhook
-    emitWebhookEvent('message_received', payload);
-
-    // Répondre automatiquement si l'utilisateur écrit ".ping"
-    if (msg.body.toLowerCase() === '.ping') {
-      msg.reply('Reçu avec succès ✅');
-    }
-  });
-
+  try {
+    await fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    console.log('✅ Message relayé au webhook');
+  } catch (err) {
+    console.error('❌ Erreur en envoyant au webhook :', err.message);
+  }
+});
   client.initialize();
+  
+ 
 }
 
 initClient();
 
-// === ROUTES API ===
+// === ROUTES ===
 
 app.get('/auth', (req, res) => {
   if (authenticated) {
