@@ -1,5 +1,6 @@
 const express = require('express');
 const { Client } = require('whatsapp-web.js');
+const { Buttons } = require('whatsapp-web.js'); 
 const QRCode = require('qrcode');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -140,6 +141,31 @@ app.post('/sendMessage', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+app.post('/sendButtons', async (req, res) => {
+  const { number, text, buttons, title = '', footer = '' } = req.body;
+
+  if (!authenticated) {
+    return res.status(401).json({ error: 'Client non authentifié' });
+  }
+
+  if (!number || !text || !Array.isArray(buttons) || buttons.length === 0) {
+    return res.status(400).json({ error: 'Champs requis : number, text, buttons[]' });
+  }
+
+  const formattedNumber = number.replace('+', '') + '@c.us';
+
+  try {
+    const buttonMsg = new Buttons(text, buttons, title, footer);
+    await client.sendMessage(formattedNumber, buttonMsg);
+    res.json({ success: true, message: 'Boutons envoyés' });
+  } catch (err) {
+    console.error('❌ Erreur en envoyant les boutons :', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 app.listen(port, () => {
   console.log(`🚀 Serveur WhatsApp en ligne sur http://localhost:${port}`);
