@@ -75,17 +75,32 @@ async function initClient() {
     authenticated = true;
     qrCodeBase64 = null;
   });
- client.on('message', async (msg) => {
-  console.log(`📩 Nouveau message de ${msg.from}: ${msg.body}`);
+client.on('message', async (msg) => {
+  console.log(`📩 Nouveau message de ${msg.from}: ${msg.body || '[média]'}`);
 
-  // Préparer les données à envoyer
   const payload = {
-    from: msg.from,        // ID WhatsApp (ex: "33712345678@c.us")
-    body: msg.body,        // Contenu du message
+    from: msg.from,
+    body: msg.body || '', // S'il n'y a pas de texte
     timestamp: msg.timestamp,
-    type: msg.type,        // Type (chat, image, audio, etc.)
-    isGroupMsg: msg.from.includes('@g.us'), // Vérifie si c'est un groupe
+    type: msg.type,
+    isGroupMsg: msg.from.includes('@g.us'),
   };
+
+  // Si le message contient un média (image, audio, vidéo, etc.)
+  if (msg.hasMedia) {
+    try {
+      const media = await msg.downloadMedia();
+      if (media) {
+        payload.media = {
+          mimetype: media.mimetype,
+          data: media.data, // base64
+          filename: media.filename || `media.${media.mimetype.split('/')[1] || 'bin'}`
+        };
+      }
+    } catch (err) {
+      console.error('❌ Erreur lors du téléchargement du média :', err.message);
+    }
+  }
 
   try {
     await fetch(WEBHOOK_URL, {
@@ -93,11 +108,12 @@ async function initClient() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    console.log('✅ Message relayé au webhook');
+    console.log('✅ Message (avec ou sans média) relayé au webhook');
   } catch (err) {
     console.error('❌ Erreur en envoyant au webhook :', err.message);
   }
 });
+
   client.initialize();
   
  
