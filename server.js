@@ -158,6 +158,31 @@ app.post('/sendMessage', async (req, res) => {
   }
 });
 
+app.post('/sendMedia', async (req, res) => {
+  const { number, media } = req.body;
+
+  if (!authenticated) {
+    return res.status(401).json({ error: 'Client non authentifié' });
+  }
+
+  if (!number || !media || !media.data || !media.mimetype) {
+    return res.status(400).json({ error: 'Champs requis manquants' });
+  }
+
+  const formatted = number.replace('+', '') + '@c.us';
+
+  try {
+    const { MessageMedia } = require('whatsapp-web.js');
+    const mediaMsg = new MessageMedia(media.mimetype, media.data, media.filename || 'fichier');
+
+    await client.sendMessage(formatted, mediaMsg);
+    res.json({ success: true, message: 'Média envoyé avec succès' });
+  } catch (err) {
+    console.error('❌ Erreur lors de l’envoi du média :', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 app.post('/sendButtons', async (req, res) => {
   const { number, text, buttons, title = '', footer = '' } = req.body;
