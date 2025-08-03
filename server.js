@@ -183,6 +183,37 @@ app.post('/sendMedia', async (req, res) => {
   }
 });
 
+app.post('/sendMediaV2', async (req, res) => {
+  const { number, media, caption = '' } = req.body;
+
+  if (!authenticated) {
+    return res.status(401).json({ error: 'Client non authentifié' });
+  }
+
+  if (!number || !media?.data || !media?.mimetype) {
+    return res.status(400).json({ error: 'Champs requis : number, media.data, media.mimetype' });
+  }
+
+  const formatted = number.replace('+', '') + '@c.us';
+
+  try {
+    const { MessageMedia } = require('whatsapp-web.js');
+    const mediaMsg = new MessageMedia(
+      media.mimetype,
+      media.data,
+      media.filename || 'fichier'
+    );
+
+    await client.sendMessage(formatted, mediaMsg, {
+      caption: caption || undefined  // Ajout du texte ici
+    });
+
+    res.json({ success: true, message: 'Média envoyé avec succès' });
+  } catch (err) {
+    console.error('❌ Erreur lors de l’envoi du média :', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.post('/sendButtons', async (req, res) => {
   const { number, text, buttons, title = '', footer = '' } = req.body;
