@@ -1,6 +1,5 @@
 const express = require('express');
-const { Client } = require('whatsapp-web.js');
-const { Buttons } = require('whatsapp-web.js'); 
+const { Client, Buttons } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -226,17 +225,28 @@ app.post('/sendButtons', async (req, res) => {
     return res.status(400).json({ error: 'Champs requis : number, text, buttons[]' });
   }
 
-  const formattedNumber = number.replace('+', '') + '@c.us';
+  // Formate le numéro correctement (supprime +, espaces, ajoute @c.us)
+  const formattedNumber = number.replace('+', '').replace(/\s+/g, '') + '@c.us';
 
   try {
-    const buttonMsg = new Buttons(text, buttons, title, footer);
+    // S’assure que chaque bouton est un objet { body: 'texte' }
+    const parsedButtons = buttons.map(b => {
+      if (typeof b === 'string') return { body: b };
+      if (b && typeof b.body === 'string') return b;
+      throw new Error('Format invalide pour un bouton');
+    });
+
+    const buttonMsg = new Buttons(text, parsedButtons, title, footer);
+
     await client.sendMessage(formattedNumber, buttonMsg);
+
     res.json({ success: true, message: 'Boutons envoyés' });
   } catch (err) {
     console.error('❌ Erreur en envoyant les boutons :', err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 app.listen(port, () => {
