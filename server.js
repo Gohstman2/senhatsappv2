@@ -5,6 +5,7 @@ const { Client, Buttons, MessageMedia } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const cors = require('cors');
 const { Pool } = require('pg');
+const fetch = require('node-fetch');
 
 // === CONFIG EXPRESS ===
 const app = express();
@@ -50,11 +51,29 @@ async function saveSessionToDB(session) {
 
 // === INITIALISATION CLIENT WHATSAPP ===
 async function initClient() {
+  if (client) {
+    console.log("♻️ Destruction de l'ancien client...");
+    await client.destroy().catch(() => {});
+  }
+
   const session = await fetchSessionFromDB();
 
   client = new Client({
     session,
-    puppeteer: { headless: true, args: ['--no-sandbox'] },
+    puppeteer: {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--disable-software-rasterizer',
+        '--disable-setuid-sandbox',
+        '--disable-extensions',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding'
+      ]
+    }
   });
 
   client.on('qr', async (qr) => {
@@ -81,9 +100,21 @@ async function initClient() {
     qrCodeBase64 = null;
   });
 
-  // === ECOUTE DES MESSAGES ENTRANTS ===
+  // === SUPPRIMER MESSAGES ENVOYÉS APRÈS ENVOI ===
+  client.on('message_create', async (msg) => {
+    if (msg.fromMe) {
+      try {
+        await msg.delete(true); // suppression pour moi
+        console.log(`🗑️ Message envoyé supprimé pour moi`);
+      } catch (err) {
+        console.error('❌ Erreur suppression message envoyé :', err.message);
+      }
+    }
+  });
+
+  // === SUPPRIMER MESSAGES REÇUS APRÈS WEBHOOK ===
   client.on('message', async (msg) => {
-    console.log(`📩 Nouveau message de ${msg.from}: ${msg.body || '[média]'}`);
+    console.log(`📩 Reçu de ${msg.from}: ${msg.body || '[média]'}`);
 
     const payload = {
       from: msg.from,
@@ -104,11 +135,27 @@ async function initClient() {
           };
         }
       } catch (err) {
-        console.error('❌ Erreur téléchargement média :', err.message);
+        console.error('Erreur téléchargement média :', err.message);
       }
     }
 
-    // Ici, tu peux envoyer `payload` à ton webhook si besoin
+    try {
+      if (process.env.WEBHOOK_URL) {
+        await fetch(process.env.WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
+
+      await msg.delete(true);
+      console.log('🗑️ Message reçu supprimé pour moi');
+
+      if (payload.media) payload.media.data = null; // libère mémoire
+
+    } catch (err) {
+      console.error('Erreur webhook ou suppression :', err.message);
+    }
   });
 
   client.initialize();
@@ -195,6 +242,18 @@ app.post('/sendButtons', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// === NOUVELLE ROUTE MEMOIRE ===
+app.get('/stats', (req, res) => {
+  const mem = process.memoryUsage();
+  res.json({
+    rss: (mem.rss / 1024 / 1024).toFixed(2) + " MB", // mémoire totale utilisée
+    heapUsed: (mem.heapUsed / 1024 / 1024).toFixed(2) + " MB", // mémoire JS utilisée
+    heapTotal: (mem.heapTotal / 1024 / 1024).toFixed(2) + " MB", // mémoire JS allouée
+    external: (mem.external / 1024 / 1024).toFixed(2) + " MB", // buffers, etc.
+    arrayBuffers: (mem.arrayBuffers / 1024 / 1024).toFixed(2) + " MB"
+  });
 });
 
 // === DEMARRAGE SERVEUR ===
