@@ -1,40 +1,56 @@
+// === DEPENDANCES ===
+require('dotenv').config();
 const express = require('express');
-const { Client, Buttons } = require('whatsapp-web.js');
+const { Client, Buttons, MessageMedia } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const cors = require('cors');
-const fetch = require('node-fetch');
+const { Pool } = require('pg');
 
+// === CONFIG EXPRESS ===
 const app = express();
 const port = 3000;
-
 app.use(cors());
 app.use(express.json());
 
+// === VARIABLES ===
 let qrCodeBase64 = null;
 let authenticated = false;
 let client;
 
-// 🌍 Ton serveur Python distant
-const REMOTE_SESSION_URL = 'https://sendfiles.pythonanywhere.com/api';
-// 🔗 URL de ton webhook
-const WEBHOOK_URL = 'https://webhookwhastsappv2-1.onrender.com/whatsapp';
+// === CONFIG POSTGRES ===
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL.includes('render.com') ? { rejectUnauthorized: false } : false
+});
 
-// 📥 Récupérer session distante
-async function fetchSessionFromRemote() {
+// === FONCTIONS BASE DE DONNÉES ===
+async function fetchSessionFromDB() {
   try {
-    const res = await fetch(`${REMOTE_SESSION_URL}/getSession`);
-    if (!res.ok) throw new Error('Session non trouvée');
-    const session = await res.json();
-    return session;
-  } catch (error) {
-    console.warn('⚠️ Aucune session trouvée sur le serveur distant');
+    const res = await pool.query('SELECT session_data FROM whatsapp_session ORDER BY id DESC LIMIT 1');
+    if (res.rows.length > 0) {
+      console.log('📦 Session récupérée depuis PostgreSQL');
+      return JSON.parse(res.rows[0].session_data);
+    }
+    console.log('⚠️ Aucune session trouvée en base');
+    return null;
+  } catch (err) {
+    console.error('❌ Erreur récupération session DB', err);
     return null;
   }
 }
 
-// 🚀 Démarrer le client WhatsApp
+async function saveSessionToDB(session) {
+  try {
+    await pool.query('INSERT INTO whatsapp_session (session_data) VALUES ($1)', [JSON.stringify(session)]);
+    console.log('☁️ Session sauvegardée dans PostgreSQL');
+  } catch (err) {
+    console.error('❌ Erreur sauvegarde session DB', err);
+  }
+}
+
+// === INITIALISATION CLIENT WHATSAPP ===
 async function initClient() {
-  const session = await fetchSessionFromRemote();
+  const session = await fetchSessionFromDB();
 
   client = new Client({
     session,
@@ -51,17 +67,7 @@ async function initClient() {
     console.log('✅ Authentifié');
     authenticated = true;
     qrCodeBase64 = null;
-
-    try {
-      await fetch(`${REMOTE_SESSION_URL}/saveSession`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(session),
-      });
-      console.log('☁️ Session sauvegardée sur le serveur distant');
-    } catch (err) {
-      console.error('❌ Erreur lors de la sauvegarde distante', err.message);
-    }
+    await saveSessionToDB(session);
   });
 
   client.on('auth_failure', (msg) => {
@@ -74,54 +80,43 @@ async function initClient() {
     authenticated = true;
     qrCodeBase64 = null;
   });
-client.on('message', async (msg) => {
-  console.log(`📩 Nouveau message de ${msg.from}: ${msg.body || '[média]'}`);
 
-  const payload = {
-    from: msg.from,
-    body: msg.body || '', // S'il n'y a pas de texte
-    timestamp: msg.timestamp,
-    type: msg.type,
-    isGroupMsg: msg.from.includes('@g.us'),
-  };
+  // === ECOUTE DES MESSAGES ENTRANTS ===
+  client.on('message', async (msg) => {
+    console.log(`📩 Nouveau message de ${msg.from}: ${msg.body || '[média]'}`);
 
-  // Si le message contient un média (image, audio, vidéo, etc.)
-  if (msg.hasMedia) {
-    try {
-      const media = await msg.downloadMedia();
-      if (media) {
-        payload.media = {
-          mimetype: media.mimetype,
-          data: media.data, // base64
-          filename: media.filename || `media.${media.mimetype.split('/')[1] || 'bin'}`
-        };
+    const payload = {
+      from: msg.from,
+      body: msg.body || '',
+      timestamp: msg.timestamp,
+      type: msg.type,
+      isGroupMsg: msg.from.includes('@g.us'),
+    };
+
+    if (msg.hasMedia) {
+      try {
+        const media = await msg.downloadMedia();
+        if (media) {
+          payload.media = {
+            mimetype: media.mimetype,
+            data: media.data,
+            filename: media.filename || `media.${media.mimetype.split('/')[1] || 'bin'}`
+          };
+        }
+      } catch (err) {
+        console.error('❌ Erreur téléchargement média :', err.message);
       }
-    } catch (err) {
-      console.error('❌ Erreur lors du téléchargement du média :', err.message);
     }
-  }
 
-  try {
-    await fetch(WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    console.log('✅ Message (avec ou sans média) relayé au webhook');
-  } catch (err) {
-    console.error('❌ Erreur en envoyant au webhook :', err.message);
-  }
-});
+    // Ici, tu peux envoyer `payload` à ton webhook si besoin
+  });
 
   client.initialize();
-  
- 
 }
 
 initClient();
 
-// === ROUTES ===
-
+// === ROUTES API ===
 app.get('/auth', (req, res) => {
   if (authenticated) {
     return res.json({ status: 'authenticated' });
@@ -138,17 +133,10 @@ app.get('/checkAuth', (req, res) => {
 
 app.post('/sendMessage', async (req, res) => {
   const { number, message } = req.body;
-
-  if (!authenticated) {
-    return res.status(401).json({ error: 'Client non authentifié' });
-  }
-
-  if (!number || !message) {
-    return res.status(400).json({ error: 'Numéro et message requis' });
-  }
+  if (!authenticated) return res.status(401).json({ error: 'Client non authentifié' });
+  if (!number || !message) return res.status(400).json({ error: 'Numéro et message requis' });
 
   const formatted = number.replace('+', '') + '@c.us';
-
   try {
     await client.sendMessage(formatted, message);
     res.json({ success: true });
@@ -159,96 +147,57 @@ app.post('/sendMessage', async (req, res) => {
 
 app.post('/sendMedia', async (req, res) => {
   const { number, media } = req.body;
-
-  if (!authenticated) {
-    return res.status(401).json({ error: 'Client non authentifié' });
-  }
-
-  if (!number || !media || !media.data || !media.mimetype) {
+  if (!authenticated) return res.status(401).json({ error: 'Client non authentifié' });
+  if (!number || !media?.data || !media?.mimetype) {
     return res.status(400).json({ error: 'Champs requis manquants' });
   }
 
   const formatted = number.replace('+', '') + '@c.us';
-
   try {
-    const { MessageMedia } = require('whatsapp-web.js');
     const mediaMsg = new MessageMedia(media.mimetype, media.data, media.filename || 'fichier');
-
     await client.sendMessage(formatted, mediaMsg);
-    res.json({ success: true, message: 'Média envoyé avec succès' });
+    res.json({ success: true });
   } catch (err) {
-    console.error('❌ Erreur lors de l’envoi du média :', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.post('/sendMediaV2', async (req, res) => {
   const { number, media, caption = '' } = req.body;
-
-  if (!authenticated) {
-    return res.status(401).json({ error: 'Client non authentifié' });
-  }
-
+  if (!authenticated) return res.status(401).json({ error: 'Client non authentifié' });
   if (!number || !media?.data || !media?.mimetype) {
     return res.status(400).json({ error: 'Champs requis : number, media.data, media.mimetype' });
   }
 
   const formatted = number.replace('+', '') + '@c.us';
-
   try {
-    const { MessageMedia } = require('whatsapp-web.js');
-    const mediaMsg = new MessageMedia(
-      media.mimetype,
-      media.data,
-      media.filename || 'fichier'
-    );
-
-    await client.sendMessage(formatted, mediaMsg, {
-      caption: caption || undefined  // Ajout du texte ici
-    });
-
-    res.json({ success: true, message: 'Média envoyé avec succès' });
+    const mediaMsg = new MessageMedia(media.mimetype, media.data, media.filename || 'fichier');
+    await client.sendMessage(formatted, mediaMsg, { caption: caption || undefined });
+    res.json({ success: true });
   } catch (err) {
-    console.error('❌ Erreur lors de l’envoi du média :', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.post('/sendButtons', async (req, res) => {
   const { number, text, buttons, title = '', footer = '' } = req.body;
-
-  if (!authenticated) {
-    return res.status(401).json({ error: 'Client non authentifié' });
-  }
-
+  if (!authenticated) return res.status(401).json({ error: 'Client non authentifié' });
   if (!number || !text || !Array.isArray(buttons) || buttons.length === 0) {
     return res.status(400).json({ error: 'Champs requis : number, text, buttons[]' });
   }
 
-  // Formate le numéro correctement (supprime +, espaces, ajoute @c.us)
   const formattedNumber = number.replace('+', '').replace(/\s+/g, '') + '@c.us';
-
   try {
-    // S’assure que chaque bouton est un objet { body: 'texte' }
-    const parsedButtons = buttons.map(b => {
-      if (typeof b === 'string') return { body: b };
-      if (b && typeof b.body === 'string') return b;
-      throw new Error('Format invalide pour un bouton');
-    });
-
+    const parsedButtons = buttons.map(b => typeof b === 'string' ? { body: b } : b);
     const buttonMsg = new Buttons(text, parsedButtons, title, footer);
-
     await client.sendMessage(formattedNumber, buttonMsg);
-
-    res.json({ success: true, message: 'Boutons envoyés' });
+    res.json({ success: true });
   } catch (err) {
-    console.error('❌ Erreur en envoyant les boutons :', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-
-
+// === DEMARRAGE SERVEUR ===
 app.listen(port, () => {
   console.log(`🚀 Serveur WhatsApp en ligne sur http://localhost:${port}`);
 });
