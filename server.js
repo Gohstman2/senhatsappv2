@@ -104,7 +104,7 @@ async function initClient() {
   client.on('message_create', async (msg) => {
     if (msg.fromMe) {
       try {
-        await msg.delete(true); // suppression pour moi
+        await msg.delete(); // suppression pour moi
         console.log(`🗑️ Message envoyé supprimé pour moi`);
       } catch (err) {
         console.error('❌ Erreur suppression message envoyé :', err.message);
