@@ -1,7 +1,7 @@
 {
-  "name": "whatsapp-bot-postgres",
+  "name": "whatsapp-bot-postgres-optimise",
   "version": "1.0.0",
-  "description": "Bot WhatsApp-web.js avec session persistante sur PostgreSQL Render",
+  "description": "Bot WhatsApp-web.js optimisé avec session PostgreSQL Render, suppression automatique des messages et surveillance mémoire",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +10,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "node-fetch": "^2.7.0",
     "pg": "^8.11.3",
     "qrcode": "^1.5.3",
     "whatsapp-web.js": "^1.23.0"
