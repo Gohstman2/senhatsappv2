@@ -125,6 +125,9 @@ async function initClient() {
       type: msg.type,
       isGroupMsg: msg.from.includes('@g.us'),
     };
+    if (msg.hasQuoteMsg){
+      playload.context = await message.getQuoteMsg();
+    }
 
     if (msg.hasMedia) {
       try {
