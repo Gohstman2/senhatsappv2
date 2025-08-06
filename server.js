@@ -7,6 +7,7 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const fetch = require('node-fetch');
 
+
 // === CONFIG EXPRESS ===
 const app = express();
 const port = 3000;
@@ -17,6 +18,7 @@ app.use(express.json());
 let qrCodeBase64 = null;
 let authenticated = false;
 let client;
+let WEBHOOK_URL = "https://webhookwhastsappv2-1.onrender.com/whatsapp"
 
 // === CONFIG POSTGRES ===
 const pool = new Pool({
@@ -140,8 +142,8 @@ async function initClient() {
     }
 
     try {
-      if (process.env.WEBHOOK_URL) {
-        await fetch(process.env.WEBHOOK_URL, {
+      if (WEBHOOK_URL) {
+        await fetch(WEBHOOK_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
