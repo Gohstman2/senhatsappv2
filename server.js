@@ -4,9 +4,7 @@ const express = require('express');
 const { Client, Buttons, MessageMedia } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const cors = require('cors');
-const { Pool } = require('pg');
 const fetch = require('node-fetch');
-
 
 // === CONFIG EXPRESS ===
 const app = express();
@@ -18,38 +16,8 @@ app.use(express.json());
 let qrCodeBase64 = null;
 let authenticated = false;
 let client;
-let WEBHOOK_URL = "https://webhookwhastsappv2-1.onrender.com/whatsapp"
-
-// === CONFIG POSTGRES ===
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL.includes('render.com') ? { rejectUnauthorized: false } : false
-});
-
-// === FONCTIONS BASE DE DONNÉES ===
-async function fetchSessionFromDB() {
-  try {
-    const res = await pool.query('SELECT session_data FROM whatsapp_session ORDER BY id DESC LIMIT 1');
-    if (res.rows.length > 0) {
-      console.log('📦 Session récupérée depuis PostgreSQL');
-      return JSON.parse(res.rows[0].session_data);
-    }
-    console.log('⚠️ Aucune session trouvée en base');
-    return null;
-  } catch (err) {
-    console.error('❌ Erreur récupération session DB', err);
-    return null;
-  }
-}
-
-async function saveSessionToDB(session) {
-  try {
-    await pool.query('INSERT INTO whatsapp_session (session_data) VALUES ($1)', [JSON.stringify(session)]);
-    console.log('☁️ Session sauvegardée dans PostgreSQL');
-  } catch (err) {
-    console.error('❌ Erreur sauvegarde session DB', err);
-  }
-}
+let currentSession = null; // stocke la session en mémoire
+let WEBHOOK_URL = "https://webhookwhastsappv2-1.onrender.com/whatsapp";
 
 // === INITIALISATION CLIENT WHATSAPP ===
 async function initClient() {
@@ -58,10 +26,8 @@ async function initClient() {
     await client.destroy().catch(() => {});
   }
 
-  const session = await fetchSessionFromDB();
-
+  // Ne plus charger la session depuis la base de données, démarrage sans session
   client = new Client({
-    session,
     puppeteer: {
       headless: true,
       args: [
@@ -88,7 +54,8 @@ async function initClient() {
     console.log('✅ Authentifié');
     authenticated = true;
     qrCodeBase64 = null;
-    await saveSessionToDB(session);
+    currentSession = session; // on garde la session en mémoire
+    // Plus d’enregistrement en base
   });
 
   client.on('auth_failure', (msg) => {
@@ -126,9 +93,8 @@ async function initClient() {
       isGroupMsg: msg.from.includes('@g.us'),
     };
     if (msg.hasQuotedMsg) {
-  payload.context = await msg.getQuotedMessage();
-}
-
+      payload.context = await msg.getQuotedMessage();
+    }
 
     if (msg.hasMedia) {
       try {
@@ -250,14 +216,25 @@ app.post('/sendButtons', async (req, res) => {
   }
 });
 
-// === NOUVELLE ROUTE MEMOIRE ===
+// === NOUVELLE ROUTE POUR TÉLÉCHARGER LA SESSION ===
+app.get('/downloadSession', (req, res) => {
+  if (!currentSession) {
+    return res.status(404).json({ error: 'Aucune session disponible' });
+  }
+  const jsonSession = JSON.stringify(currentSession, null, 2);
+  res.setHeader('Content-disposition', 'attachment; filename=whatsapp_session.json');
+  res.setHeader('Content-Type', 'application/json');
+  res.send(jsonSession);
+});
+
+// === ROUTE STATISTIQUES MÉMOIRE ===
 app.get('/stats', (req, res) => {
   const mem = process.memoryUsage();
   res.json({
-    rss: (mem.rss / 1024 / 1024).toFixed(2) + " MB", // mémoire totale utilisée
-    heapUsed: (mem.heapUsed / 1024 / 1024).toFixed(2) + " MB", // mémoire JS utilisée
-    heapTotal: (mem.heapTotal / 1024 / 1024).toFixed(2) + " MB", // mémoire JS allouée
-    external: (mem.external / 1024 / 1024).toFixed(2) + " MB", // buffers, etc.
+    rss: (mem.rss / 1024 / 1024).toFixed(2) + " MB",
+    heapUsed: (mem.heapUsed / 1024 / 1024).toFixed(2) + " MB",
+    heapTotal: (mem.heapTotal / 1024 / 1024).toFixed(2) + " MB",
+    external: (mem.external / 1024 / 1024).toFixed(2) + " MB",
     arrayBuffers: (mem.arrayBuffers / 1024 / 1024).toFixed(2) + " MB"
   });
 });
